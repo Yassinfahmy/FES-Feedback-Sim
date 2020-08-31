@@ -6,10 +6,10 @@ of hand endpoint through time via multivariate function minimization
 """
 
 import math
-from scipy.optimize import Bounds, minimize
+from scipy.optimize import Bounds, minimize,HessianUpdateStrategy
+from progressbar import ProgressBar, Percentage, Bar, ETA
 
 import model
-
 
 # %% data preparation prior to generating poses
 
@@ -22,15 +22,15 @@ endpoints = current_experiment.endpoints
 # hand endpoint locations
 IK_joint_angles = []
 
-
 # bounds on joint angles (dictated by anatomy), used by both initial_pose() 
-# and more_pose() 
+# and more_pose() (lb is lower bound and ub is upper bound)
 lb = []
 ub = []
 for joint in current_model.skeleton.joints:
     lb.append(math.radians(joint.min_ang))
     ub.append(math.radians(joint.max_ang))
-    
+
+# Bounds function in scipy    
 bounds = Bounds(lb, ub)
 
 # %% calculate the initial pose of the skeleton
@@ -65,7 +65,7 @@ def initial_pose(joint_angles, *args):
     return 10*endpoint_error + default_ang_dev
 
 # minimize function using trust regions subject to constraints
-res = minimize(initial_pose, x0, method='trust-constr', options={'verbose': 0},
+res = minimize(initial_pose, x0, method='SLSQP', options={'verbose': 0},
                bounds=bounds)
 
 # write solution to skeleton
@@ -76,7 +76,7 @@ for i, joint in enumerate(current_model.skeleton.joints):
 IK_joint_angles.append(current_model.skeleton.return_joint_angles())
     
 # %% calculate all other poses
-
+    
 # function to be minimized 
 def more_pose(joint_angles, *args):
     
@@ -97,20 +97,27 @@ def more_pose(joint_angles, *args):
 iter_endpoints = iter(endpoints)
 next(iter_endpoints)
 
+# widgets for the progress bar
+widgets = ['PROGRESS: ', Percentage(), ' ',
+              Bar(marker='-',left='[',right=']\n'),
+               ' ', ETA(),' \n ']
+#create a progress bar object
+pbar = ProgressBar(maxval=len(endpoints),widgets=widgets).start()
+
 # iterate through every endpoint (other than first one)
 for i, endpoint in enumerate(iter_endpoints):
+    #update progress bar
+    pbar.update(i+1)
     
-    print(i)
     
     """
-    this is a crude, temp way to track the IK solver's progress, a cleaner way
-    would be nice
+    New way added to track progress
     """
     
     # initial guess is current value of all joint angles
     x0 = []
     for joint in current_model.skeleton.joints:
-        x0.append(math.radians(joint.angle))
+        x0.append(joint.angle)
 
     # current endpoint being solved for
     hand_endpoint = endpoint
@@ -118,8 +125,9 @@ for i, endpoint in enumerate(iter_endpoints):
     # stuff the function we're minimizing needs to have access to
     args = (current_model.skeleton, hand_endpoint, x0)
     
+    
     # minimize function using trust regions subject to constraints
-    res = minimize(more_pose, x0, method='trust-constr', 
+    res = minimize(more_pose, x0, method='SLSQP', 
                    options={'verbose': 0}, bounds=bounds)
     
     """
@@ -138,15 +146,21 @@ for i, endpoint in enumerate(iter_endpoints):
 
     # record solution
     IK_joint_angles.append(current_model.skeleton.return_joint_angles())
-    
-# examine the finished results
-anim = current_model.skeleton.animate(IK_joint_angles, 100)
-
+# end progress bar    
+pbar.finish() 
+   
+# write IK derived joint angles to experiment object
+joint_datas = []
 for joint in current_model.skeleton.joints:
-    current_experiment.joints.append(model.JointData(joint.name))
+    joint_datas.append(model.JointData(joint.name))
+    
+current_experiment.joints = joint_datas
 
 for i, joint_data in enumerate(current_experiment.joints):
     current_experiment.joints[i].angle = [x[i] for x in IK_joint_angles]
+    
+# examine the finished results
+anim = current_model.animate(current_experiment)
 
 # write finished results
 current_model.dump()
